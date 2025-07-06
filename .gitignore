@@ -1,0 +1,6 @@
+# Исключаем временные и служебные файлы/папки
+__pycache__/
+.venv/
+build/
+dist/
+RoadMap.spec 
