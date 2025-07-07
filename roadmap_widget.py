@@ -1019,6 +1019,14 @@ class RoadMapWidget(QGraphicsView):
                 data['title'] = new_title
                 data['note_text'] = new_text
                 stage_item.update_data(data)
+        elif stage_type == 'image':
+            # Для изображений редактируем description
+            text = data.get('description', '')
+            dialog = CustomTextEditDialog(text, self)
+            if dialog.exec_() == dialog.Accepted:
+                new_text = dialog.get_text()
+                data['description'] = new_text
+                stage_item.update_data(data)
         else:
             text = data.get('note_text', data.get('title', ''))
             dialog = CustomTextEditDialog(text, self)
