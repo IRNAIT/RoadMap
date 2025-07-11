@@ -129,6 +129,7 @@ class StageGraphicsItem(QGraphicsObject):
 
     def __init__(self, stage_data, _recalculate=True):
         super().__init__()
+        self.rich_text_editor = ScrollableRichTextEditor()  # Для поддержки форматирования
         self.stage_data = stage_data
         if 'id' not in self.stage_data:
             self.stage_data['id'] = str(uuid.uuid4())
@@ -412,7 +413,11 @@ class StageGraphicsItem(QGraphicsObject):
                     conn.update()
 
     def update_data(self, new_data):
-        self.stage_data['title'] = new_data.get('title', self.stage_data.get('title', ''))
+        if 'formatted_title' in new_data:
+            self.rich_text_editor.from_json(new_data['formatted_title'])
+            self.stage_data['title'] = self.rich_text_editor.get_raw_text()
+        else:
+            self.stage_data['title'] = new_data.get('title', self.stage_data.get('title', ''))
         self.stage_data.pop('width', None)
         self.stage_data.pop('height', None)
         self.recalculate_size()
@@ -421,6 +426,7 @@ class ImageStageGraphicsItem(StageGraphicsItem):
     """Специализированный блок для отображения изображения и описания под ним с возможностью изменения размера."""
     def __init__(self, stage_data):
         super().__init__(stage_data, _recalculate=False)
+        self.rich_text_editor = ScrollableRichTextEditor()  # Для поддержки форматирования
         self.original_pixmap = QPixmap(self.stage_data.get('image_path'))
         self.pixmap = self.original_pixmap.copy()
         if 'image_width' in self.stage_data and not self.original_pixmap.isNull():
@@ -536,6 +542,7 @@ class ImageStageGraphicsItem(StageGraphicsItem):
 class TxtStageGraphicsItem(StageGraphicsItem):
     def __init__(self, stage_data):
         super().__init__(stage_data, _recalculate=False)
+        self.rich_text_editor = ScrollableRichTextEditor()  # Для поддержки форматирования
         self.icon = QPixmap(32, 32)
         self.icon.fill(Qt.transparent)
         painter = QPainter(self.icon)
@@ -711,8 +718,12 @@ class TxtStageGraphicsItem(StageGraphicsItem):
         return data
 
     def update_data(self, new_data):
+        if 'formatted_note_text' in new_data:
+            self.rich_text_editor.from_json(new_data['formatted_note_text'])
+            self.stage_data['note_text'] = self.rich_text_editor.get_raw_text()
+        else:
+            self.stage_data['note_text'] = new_data.get('note_text', self.stage_data.get('note_text', ''))
         self.stage_data['title'] = new_data.get('title', self.stage_data.get('title', ''))
-        self.stage_data['note_text'] = new_data.get('note_text', self.stage_data.get('note_text', ''))
         self.stage_data.pop('width', None)
         self.stage_data.pop('height', None)
         self.recalculate_size()
@@ -1007,35 +1018,55 @@ class RoadMapWidget(QGraphicsView):
         if stage_type == 'txt':
             # Собираем все существующие названия txt-файлов (кроме текущего)
             all_titles = [item.stage_data.get('title', '') for item in self.scene.items() if hasattr(item, 'stage_data') and item.stage_data.get('type') == 'txt' and item is not stage_item]
+            initial_title = data.get('title', '')
+            if initial_title == 'Новый txt-файл':
+                initial_title = ''
             dialog = TxtFileEditDialog(
-                initial_title=data.get('title', ''),
+                initial_title=initial_title,
                 initial_text=data.get('note_text', ''),
                 existing_titles=all_titles,
                 parent=self
             )
+            # --- интеграция форматирования ---
+            if 'formatted_note_text' in data:
+                dialog.editor.from_json(data['formatted_note_text'])
             if dialog.exec_() == dialog.Accepted:
                 new_title = dialog.get_title()
-                new_text = dialog.get_text()
+                # Сохраняем форматированный текст
+                formatted_note_text = dialog.get_formatted_json()
                 data['title'] = new_title
-                data['note_text'] = new_text
+                data['note_text'] = dialog.get_text()
+                data['formatted_note_text'] = formatted_note_text
                 stage_item.update_data(data)
         elif stage_type == 'image':
             # Для изображений редактируем description
             text = data.get('description', '')
             dialog = CustomTextEditDialog(text, self)
+            if 'formatted_description' in data:
+                dialog.editor.from_json(data['formatted_description'])
             if dialog.exec_() == dialog.Accepted:
                 new_text = dialog.get_text()
+                formatted_description = dialog.get_formatted_json()
                 data['description'] = new_text
+                data['formatted_description'] = formatted_description
                 stage_item.update_data(data)
         else:
             text = data.get('note_text', data.get('title', ''))
+            # Если это стартовый текст — очищаем поле для ввода
+            if text == 'Новый этап':
+                text = ''
             dialog = CustomTextEditDialog(text, self)
+            if 'formatted_title' in data:
+                dialog.editor.from_json(data['formatted_title'])
             if dialog.exec_() == dialog.Accepted:
                 new_text = dialog.get_text()
+                formatted_title = dialog.get_formatted_json()
                 if 'note_text' in data:
                     data['note_text'] = new_text
+                    data['formatted_note_text'] = formatted_title
                 else:
                     data['title'] = new_text
+                    data['formatted_title'] = formatted_title
                 stage_item.update_data(data)
 
     def wheelEvent(self, event):
@@ -1301,4 +1332,8 @@ def parse_discord_to_html(text):
     text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
     text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', text)
     text = re.sub(r'_([^_]+)_', r'<i>\1</i>', text)
+    # --- Фикс начальных пробелов ---
+    def replace_leading_spaces(line):
+        return re.sub(r'^ +', lambda m: '&nbsp;' * len(m.group(0)), line)
+    text = '\n'.join(replace_leading_spaces(line) for line in text.split('\n'))
     return text.replace('\n', '<br>')

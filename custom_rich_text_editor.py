@@ -1,4 +1,5 @@
 import re
+import json
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QPushButton, QApplication, QScrollArea, QDialog, QHBoxLayout, QSizePolicy, QLabel, QMessageBox
 from PyQt5.QtGui import QPainter, QFont, QColor, QKeyEvent, QFontMetrics, QClipboard
 from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QTimer
@@ -135,19 +136,24 @@ class CustomRichTextEditor(QWidget):
         for item in layout:
             m = item['metrics']
             painter.setFont(item['font'])
-            if sel_min <= item['pos'] < sel_max:
-                painter.setPen(QColor('black'))
-            else:
-                painter.setPen(QColor('black'))
+            painter.setPen(QColor('black'))
             painter.drawText(QPoint(item['x'], item['y']), item['char'])
         # --- Курсор ---
         if self._cursor_visible:
+            cursor_drawn = False
             for item in layout:
                 if item['pos'] == self.cursor_pos:
                     m = item['metrics']
                     painter.setPen(QColor('black'))
                     painter.drawLine(item['x'], item['y'] - m.ascent(), item['x'], item['y'] + m.descent())
+                    cursor_drawn = True
                     break
+            if not cursor_drawn and layout:
+                # Если не нашли позицию — рисуем курсор в конце текста
+                last = layout[-1]
+                m = last['metrics']
+                painter.setPen(QColor('black'))
+                painter.drawLine(last['x'], last['y'] - m.ascent(), last['x'], last['y'] + m.descent())
         # --- Высота ---
         if layout:
             last = layout[-1]
@@ -174,6 +180,18 @@ class CustomRichTextEditor(QWidget):
                 return
             elif event.key() == Qt.Key_V:
                 self.paste_clipboard()
+                self._rebuild_raw()
+                self.update()
+                return
+        # Shift+Enter — мягкий перенос строки
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.modifiers() & Qt.ShiftModifier:
+                self.insert_text('\n')
+                self._rebuild_raw()
+                self.update()
+                return
+            else:
+                self.insert_text('\n\n')
                 self._rebuild_raw()
                 self.update()
                 return
@@ -229,14 +247,6 @@ class CustomRichTextEditor(QWidget):
                     # Уже на последней строке, переходим в конец
                     self.cursor_pos = len(self.get_display_text())
             self.selection_start = self.selection_end = self.cursor_pos
-            self.update()
-            return
-        # Enter — новая строка
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-            if self.has_selection():
-                self.delete_selection()
-            self.insert_text('\n')
-            self._rebuild_raw()
             self.update()
             return
         # Пробел — применить форматирование
@@ -298,44 +308,71 @@ class CustomRichTextEditor(QWidget):
                 pos -= len(frag.text)
 
     def apply_formatting_by_markers(self):
-        # Рекурсивный парсер вложенных маркеров
-        def parse(text, active_formats=None):
-            if active_formats is None:
-                active_formats = []
-            patterns = [
-                (r'^\*\*\*([^*]+)\*\*\*', ['bold', 'italic']),
-                (r'^__([^_]+)__', ['underline']),
-                (r'^\*\*([^*]+)\*\*', ['bold']),
-                (r'^\*([^*]+)\*', ['italic']),
-                (r'^~~([^~]+)~~', ['strike']),
-            ]
-            fragments = []
-            i = 0
-            found_marker = False
-            while i < len(text):
-                for pat, fmts in patterns:
-                    m = re.match(pat, text[i:])
-                    if m:
-                        found_marker = True
-                        inner = m.group(1)
-                        inner_frags = parse(inner, active_formats + fmts)[0]
-                        fragments.extend(inner_frags)
-                        i += m.end(0)
-                        break
+        # Новый парсер: разбирает только те части текста, где есть маркеры, остальные фрагменты не трогает
+        def parse_fragments(fragments):
+            result = []
+            changed = False
+            for frag in fragments:
+                # Если фрагмент уже форматирован (frag.formats не пустой), оставляем как есть
+                if frag.formats:
+                    result.append(frag)
+                    continue
+                # Если во фрагменте есть маркеры — парсим его
+                text = frag.text
+                def parse(text, active_formats=None):
+                    if active_formats is None:
+                        active_formats = []
+                    patterns = [
+                        (r'\*\*\*([^*]+)\*\*\*', ['bold', 'italic']),
+                        (r'__([^_]+)__', ['underline']),
+                        (r'\*\*([^*]+)\*\*', ['bold']),
+                        (r'\*([^*]+)\*', ['italic']),
+                        (r'~~([^~]+)~~', ['strike']),
+                    ]
+                    fragments = []
+                    i = 0
+                    found_marker = False
+                    while i < len(text):
+                        nearest = None
+                        nearest_pat = None
+                        nearest_fmts = None
+                        nearest_start = None
+                        for pat, fmts in patterns:
+                            m = re.search(pat, text[i:])
+                            if m:
+                                start = m.start(0)
+                                if nearest is None or start < nearest_start:
+                                    nearest = m
+                                    nearest_pat = pat
+                                    nearest_fmts = fmts
+                                    nearest_start = start
+                        if nearest:
+                            # Добавить обычный текст до маркера
+                            if nearest_start > 0:
+                                frag_text = text[i:i+nearest_start]
+                                if frag_text:
+                                    fragments.append(TextFragment(frag_text, active_formats.copy()))
+                            found_marker = True
+                            inner = nearest.group(1)
+                            inner_frags = parse(inner, active_formats + nearest_fmts)[0]
+                            fragments.extend(inner_frags)
+                            i += nearest.start(0) + nearest.end(0)
+                        else:
+                            # Нет больше маркеров — добавляем остаток текста
+                            frag_text = text[i:]
+                            if frag_text:
+                                fragments.append(TextFragment(frag_text, active_formats.copy()))
+                            break
+                    return fragments, found_marker
+                new_frags, found_marker = parse(text)
+                if found_marker:
+                    result.extend(new_frags)
+                    changed = True
                 else:
-                    next_pos = len(text)
-                    for pat, _ in patterns:
-                        m = re.search(pat, text[i+1:])
-                        if m:
-                            next_pos = min(next_pos, i+1+m.start(0))
-                    frag_text = text[i:next_pos]
-                    if frag_text:
-                        fragments.append(TextFragment(frag_text, active_formats.copy()))
-                    i = next_pos
-            return fragments, found_marker
-        new_fragments, found_marker = parse(self.get_display_text())
-        if found_marker:
-            self.fragments = new_fragments
+                    result.append(frag)
+            return result, changed
+        # Применяем только к неформатированным фрагментам
+        self.fragments, changed = parse_fragments(self.fragments)
         self.cursor_pos = len(self.get_display_text())
 
     def try_unformat_at_cursor(self):
@@ -412,6 +449,30 @@ class CustomRichTextEditor(QWidget):
     def get_raw_text(self):
         self._rebuild_raw()
         return self.raw_text
+
+    def to_json(self):
+        """Сериализует фрагменты в JSON-строку"""
+        data = [
+            {"text": frag.text, "formats": frag.formats} for frag in self.fragments
+        ]
+        return json.dumps(data, ensure_ascii=False)
+
+    def from_json(self, json_str):
+        """Восстанавливает фрагменты из JSON-строки"""
+        try:
+            data = json.loads(json_str)
+            self.fragments = [TextFragment(item["text"], item["formats"]) for item in data]
+            self.cursor_pos = sum(len(frag.text) for frag in self.fragments)
+            self.selection_start = self.selection_end = self.cursor_pos
+            self._rebuild_raw()
+            self.update()
+        except Exception as e:
+            # Если не удалось — сбрасываем в обычный текст
+            self.fragments = [TextFragment(json_str)]
+            self.cursor_pos = len(json_str)
+            self.selection_start = self.selection_end = self.cursor_pos
+            self._rebuild_raw()
+            self.update()
 
     def _get_scroll_offset(self):
         # scroll_offset больше не нужен, всегда возвращаем 0
@@ -733,6 +794,7 @@ class CustomRichTextEditor(QWidget):
         pos = 0
         line = 0
         layout = []
+        tab_width = self.fontMetrics().width(' ') * 6  # ширина красной строки (6 пробелов)
         for frag in self.fragments:
             f = QFont('Finlandica', 12)
             if 'bold' in frag.formats:
@@ -744,25 +806,41 @@ class CustomRichTextEditor(QWidget):
             if 'strike' in frag.formats:
                 f.setStrikeOut(True)
             metrics = QFontMetrics(f)
-            words = self._split_text_into_words(frag.text)
-            for word in words:
-                if word == '\n':
+            # --- Новый блок: разбиваем по \n ---
+            lines = frag.text.split('\n')
+            for line_idx, line_text in enumerate(lines):
+                i = 0
+                while i < len(line_text):
+                    if line_text[i] == '\t':
+                        # Красная строка — визуально как 6 пробелов
+                        layout.append({'x': x, 'y': y, 'char': '', 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag, 'tab': True})
+                        x += tab_width
+                        i += 1
+                        pos += 1
+                        continue
+                    # Обычный текст
+                    word = ''
+                    while i < len(line_text) and line_text[i] != '\t':
+                        word += line_text[i]
+                        i += 1
+                    if word:
+                        words = self._split_text_into_words(word)
+                        for w in words:
+                            word_width = metrics.width(w)
+                            if x + word_width > max_text_width and x > margin_left:
+                                x = margin_left
+                                y += line_height
+                                line += 1
+                            for ch in w:
+                                char_width = metrics.width(ch)
+                                layout.append({'x': x, 'y': y, 'char': ch, 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag})
+                                x += char_width
+                                pos += 1
+                # Если это не последняя строка — перенос
+                if line_idx < len(lines) - 1:
                     x = margin_left
                     y += line_height
                     line += 1
-                    continue
-                word_width = metrics.width(word)
-                if x + word_width > max_text_width and x > margin_left:
-                    x = margin_left
-                    y += line_height
-                    line += 1
-                for ch in word:
-                    char_width = metrics.width(ch)
-                    layout.append({
-                        'x': x, 'y': y, 'char': ch, 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag
-                    })
-                    x += char_width
-                    pos += 1
         # "виртуальный" символ для конца текста
         layout.append({'x': x, 'y': y, 'char': '', 'pos': pos, 'line': line, 'font': self.font, 'metrics': QFontMetrics(self.font), 'frag': None})
         return layout
@@ -783,6 +861,7 @@ class ScrollableRichTextEditor(QScrollArea):
         self._autoscroll_timer = QTimer(self)
         self._autoscroll_timer.setSingleShot(True)
         self._autoscroll_timer.timeout.connect(self._enable_autoscroll)
+        # self.setTabChangesFocus(False)  # Удаляем, чтобы не было ошибки
         # --- Стилизация контейнера ---
         self.setStyleSheet('''
             QScrollArea {
@@ -841,13 +920,15 @@ class ScrollableRichTextEditor(QScrollArea):
         self.editor.cursor_pos = len(text)
         self.editor.selection_start = self.editor.selection_end = self.editor.cursor_pos
         self.editor._rebuild_raw()
+        self.editor.apply_formatting_by_markers()  # Автоматически применяем форматирование по маркерам
         self.editor.update()
         self.force_scroll_to_cursor()
     
     def keyPressEvent(self, event):
-        # Передаем события клавиатуры редактору
+        # Всегда передаём Tab (и любые клавиши) только во внутренний редактор
         self.editor.keyPressEvent(event)
-    
+        # Не вызываем super().keyPressEvent(event), чтобы Tab не прокручивал
+
     def focusInEvent(self, event):
         # Передаем фокус редактору
         self.editor.setFocus()
@@ -872,6 +953,12 @@ class ScrollableRichTextEditor(QScrollArea):
         self._autoscroll_enabled = True
         self._check_scroll_needed()
         self._autoscroll_enabled = prev
+
+    def to_json(self):
+        return self.editor.to_json()
+
+    def from_json(self, json_str):
+        self.editor.from_json(json_str)
 
 class CustomTextEditDialog(QDialog):
     def __init__(self, initial_text='', parent=None):
@@ -952,6 +1039,9 @@ class CustomTextEditDialog(QDialog):
 
     def get_text(self):
         return self.editor.get_display_text()
+
+    def get_formatted_json(self):
+        return self.editor.to_json()
 
 class TxtFileEditDialog(QDialog):
     def __init__(self, initial_title='', initial_text='', existing_titles=None, parent=None):
@@ -1063,6 +1153,9 @@ class TxtFileEditDialog(QDialog):
 
     def get_text(self):
         return self.editor.get_display_text()
+
+    def get_formatted_json(self):
+        return self.editor.to_json()
 
     def _on_accept(self):
         title = self.get_title()
