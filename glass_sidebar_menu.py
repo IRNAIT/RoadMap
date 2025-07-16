@@ -2,6 +2,9 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayo
 from PyQt5.QtCore import QPropertyAnimation, Qt, QSize, QEvent, pyqtProperty, QRectF, pyqtSignal
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QLinearGradient, QColor, QBrush, QPainterPath
 import os
+import base64
+import json
+from app_settings import load_settings, save_settings
 
 AVATAR_PATH = 'avatar.png'
 
@@ -168,6 +171,28 @@ class AvatarWidget(QLabel):
 
     def load_avatar(self):
         size = 56
+        settings = load_settings()
+        avatar_b64 = settings.get('avatar_b64')
+        if avatar_b64:
+            try:
+                img_bytes = base64.b64decode(avatar_b64)
+                pixmap = QPixmap()
+                pixmap.loadFromData(img_bytes)
+                src = pixmap.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                mask = QPixmap(size, size)
+                mask.fill(Qt.transparent)
+                painter = QPainter(mask)
+                path = QPainterPath()
+                path.addEllipse(QRectF(0, 0, size, size))
+                painter.setRenderHint(QPainter.Antialiasing)
+                painter.setClipPath(path)
+                painter.drawPixmap(0, 0, src)
+                painter.end()
+                self.setPixmap(mask)
+                return
+            except Exception:
+                pass
+        # Фоллбек: если нет base64, пробуем файл
         if os.path.exists(AVATAR_PATH):
             src = QPixmap(AVATAR_PATH)
             src = src.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
@@ -198,7 +223,11 @@ class AvatarWidget(QLabel):
         if event.button() == Qt.LeftButton:
             file_path, _ = QFileDialog.getOpenFileName(self, 'Выбрать аватар', '', 'Изображения (*.png *.jpg *.jpeg *.bmp *.gif)')
             if file_path:
-                pix = QPixmap(file_path).scaled(56, 56, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                pix.save(AVATAR_PATH)
+                with open(file_path, 'rb') as f:
+                    img_bytes = f.read()
+                avatar_b64 = base64.b64encode(img_bytes).decode('utf-8')
+                settings = load_settings()
+                settings['avatar_b64'] = avatar_b64
+                save_settings(settings)
                 self.load_avatar()
         super().mousePressEvent(event) 

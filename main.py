@@ -5,6 +5,11 @@ import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QFileDialog, QMessageBox, QHBoxLayout, QWidget, QSizePolicy)
 from PyQt5.QtCore import Qt, QTimer
 
+import json
+import base64
+import os
+from app_settings import load_settings, save_settings
+
 from roadmap_widget import RoadMapWidget
 from file_manager import FileManager
 from glass_menu import GlassDialog
@@ -39,6 +44,8 @@ QPushButton:pressed {
     background-color: #004578;
 }
 """
+
+SETTINGS_PATH = 'settings.json'
 
 class LeftEdgeSensor(QWidget):
     def __init__(self, sidebar_menu, width=20, parent=None):
