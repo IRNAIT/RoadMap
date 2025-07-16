@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import sys
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QFileDialog, QMessageBox)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QFileDialog, QMessageBox, QHBoxLayout, QWidget, QSizePolicy)
 from PyQt5.QtCore import Qt, QTimer
 
 from roadmap_widget import RoadMapWidget
 from file_manager import FileManager
 from glass_menu import GlassDialog
+from glass_sidebar_menu import GlassSidebarMenu
 
 MESSAGE_BOX_STYLESHEET = """
 QMessageBox {
@@ -39,6 +40,22 @@ QPushButton:pressed {
 }
 """
 
+class LeftEdgeSensor(QWidget):
+    def __init__(self, sidebar_menu, width=20, parent=None):
+        super().__init__(parent)
+        self.sidebar_menu = sidebar_menu
+        self.setFixedWidth(width)
+        self.setFixedHeight(3000)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setStyleSheet('background: rgba(255,0,0,0.7);')
+        self.setMouseTracking(True)
+        # self.hide()  # УБРАНО!
+
+    def enterEvent(self, event):
+        print('Sensor enter')
+        self.sidebar_menu.expand()
+        super().enterEvent(event)
+
 class RoadMapApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -58,8 +75,46 @@ class RoadMapApp(QMainWindow):
         self.autosave_timer.start(300000)
 
     def setup_ui(self):
-        self.setCentralWidget(self.roadmap_widget)
-        
+        # --- GlassSidebarMenu ---
+        self.sidebar = GlassSidebarMenu()
+        self.sidebar.setParent(None)  # отдельное окно
+        self.sidebar.move(self.geometry().x(), self.geometry().y())
+        self.sidebar.hide()
+
+        # --- Подключаем сигналы боковой панели ---
+        self.sidebar.open_project_requested.connect(self.open_project)
+        self.sidebar.save_project_requested.connect(self.save_project)
+        self.sidebar.export_png_requested.connect(self.export_to_png)
+
+        # --- Основной RoadMapWidget ---
+        self.roadmap_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # --- Layout ---
+        main_layout = QHBoxLayout()
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.roadmap_widget)
+        central_widget = QWidget()
+        central_widget.setLayout(main_layout)
+        self.setCentralWidget(central_widget)
+
+        # --- LeftEdgeSensor ---
+        self.sensor = LeftEdgeSensor(self.sidebar, width=8, parent=self.centralWidget())
+        self.sensor.move(0, 0)
+        self.sensor.setFixedHeight(self.centralWidget().height())
+        self.sensor.show()
+        self.sensor.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Перемещаем и растягиваем сенсор и боковую панель при изменении размера окна
+        if hasattr(self, 'sensor'):
+            self.sensor.setFixedHeight(self.centralWidget().height())
+            self.sensor.move(0, 0)
+        if hasattr(self, 'sidebar'):
+            self.sidebar.move(self.mapToGlobal(self.centralWidget().pos()))
+            self.sidebar.setFixedHeight(self.centralWidget().height())
+
     def setup_connections(self):
         self.roadmap_widget.new_project_requested.connect(self.new_project)
         self.roadmap_widget.open_project_requested.connect(self.open_project)

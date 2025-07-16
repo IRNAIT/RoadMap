@@ -143,15 +143,13 @@ class StageGraphicsItem(QGraphicsObject):
         self.is_locked = False
         self.setFlag(QGraphicsObject.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
-        self.shadow_effect = QGraphicsDropShadowEffect()
-        self.shadow_effect.setBlurRadius(15)
-        self.shadow_effect.setColor(QColor(0, 0, 0, 80))
-        self.shadow_effect.setOffset(5, 5)
-        self.setGraphicsEffect(self.shadow_effect)
         self._is_hovered = False
         self.resizing = False
         self.resize_handle_size = 15
         self.last_mouse_pos = QPointF()
+        self._cached_doc = None
+        self._cached_html = None
+        self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         if _recalculate:
             self.recalculate_size()
 
@@ -328,12 +326,16 @@ class StageGraphicsItem(QGraphicsObject):
         painter.drawRoundedRect(self.boundingRect(), 10, 10)
         painter.setPen(QColor("#222222"))
         painter.setFont(self.font)
-        doc = QTextDocument()
-        doc.setDefaultFont(self.font)
         raw_text = self.stage_data.get('title', '')
         html = parse_discord_to_html(raw_text)
-        doc.setHtml(html)
-        doc.setTextWidth(self.boundingRect().width() - 16)
+        if self._cached_doc is None or self._cached_html != html or self._cached_doc.textWidth() != self.boundingRect().width() - 16:
+            doc = QTextDocument()
+            doc.setDefaultFont(self.font)
+            doc.setHtml(html)
+            doc.setTextWidth(self.boundingRect().width() - 16)
+            self._cached_doc = doc
+            self._cached_html = html
+        doc = self._cached_doc
         painter.save()
         painter.translate(self.boundingRect().left() + 8, self.boundingRect().top() + 8)
         clip = QRectF(0, 0, self.boundingRect().width() - 16, self.boundingRect().height() - 16)
@@ -427,20 +429,25 @@ class ImageStageGraphicsItem(StageGraphicsItem):
     def __init__(self, stage_data):
         super().__init__(stage_data, _recalculate=False)
         self.rich_text_editor = ScrollableRichTextEditor()  # Для поддержки форматирования
-        self.original_pixmap = QPixmap(self.stage_data.get('image_path'))
-        self.pixmap = self.original_pixmap.copy()
-        if 'image_width' in self.stage_data and not self.original_pixmap.isNull():
+        from PyQt5.QtGui import QImage
+        self.original_image = QImage(self.stage_data.get('image_path'))
+        self.pixmap = QPixmap.fromImage(self.original_image)
+        if 'image_width' in self.stage_data and not self.original_image.isNull():
             new_w = self.stage_data['image_width']
-            self.pixmap = self.original_pixmap.scaledToWidth(new_w, Qt.SmoothTransformation)
+            self.pixmap = QPixmap.fromImage(self.original_image.scaledToWidth(new_w, Qt.SmoothTransformation))
         self.padding = 15
         self.text_margin_top = 10
         self.description_font = QFont('Finlandica Bold', 9)
+        self._cached_desc = None
+        self._cached_desc_html = None
+        self._cached_desc_width = None
         self.recalculate_size()
 
     def recalculate_size(self, new_image_width=None):
+        from PyQt5.QtGui import QImage
         self.prepareGeometryChange()
-        if not self.original_pixmap.isNull() and new_image_width is not None:
-            self.pixmap = self.original_pixmap.scaledToWidth(int(new_image_width), Qt.SmoothTransformation)
+        if not self.original_image.isNull() and new_image_width is not None:
+            self.pixmap = QPixmap.fromImage(self.original_image.scaledToWidth(int(new_image_width), Qt.SmoothTransformation))
         image_width = self.pixmap.width()
         image_height = self.pixmap.height()
         fm = QFontMetrics(self.description_font)
@@ -473,7 +480,25 @@ class ImageStageGraphicsItem(StageGraphicsItem):
         description_rect = QRectF(text_x, text_y, text_wrap_width, remaining_height)
         painter.setPen(QColor("#222"))
         painter.setFont(self.description_font)
-        painter.drawText(description_rect, Qt.AlignCenter | Qt.TextWordWrap, self.stage_data.get('description', ''))
+        desc = self.stage_data.get('description', '')
+        desc_html = parse_discord_to_html(desc)
+        if (
+            self._cached_desc is None or
+            self._cached_desc_html != desc_html or
+            self._cached_desc_width != text_wrap_width
+        ):
+            doc = QTextDocument()
+            doc.setDefaultFont(self.description_font)
+            doc.setHtml(desc_html)
+            doc.setTextWidth(text_wrap_width)
+            self._cached_desc = doc
+            self._cached_desc_html = desc_html
+            self._cached_desc_width = text_wrap_width
+        doc = self._cached_desc
+        painter.save()
+        painter.translate(description_rect.left(), description_rect.top())
+        doc.drawContents(painter, QRectF(0, 0, description_rect.width(), description_rect.height()))
+        painter.restore()
         if getattr(self, 'is_locked', False):
             lock_rect = QRectF(self.boundingRect().left() + 6, self.boundingRect().top() + 6, 18, 18)
             painter.setPen(Qt.NoPen)
@@ -557,6 +582,8 @@ class TxtStageGraphicsItem(StageGraphicsItem):
         self.font = QFont("Finlandica", 12)
         self.preview_font = QFont("Finlandica Bold", 9)
         self._expanded = False
+        self._cached_lines = None
+        self._cached_title = None
         self.recalculate_size()
 
     def mousePressEvent(self, event):
@@ -627,6 +654,8 @@ class TxtStageGraphicsItem(StageGraphicsItem):
         height = icon_size + len(lines) * fm.height() + 3 * padding
         self._txt_lines = lines
         self.rect = QRectF(0, 0, max_width, height)
+        self._cached_lines = lines
+        self._cached_title = title
         self.update()
         for conn in self.connections:
             conn.update_path()
@@ -663,20 +692,23 @@ class TxtStageGraphicsItem(StageGraphicsItem):
         painter.setPen(QColor('#222'))
         fm = QFontMetrics(self.font)
         title = self.stage_data.get('title', 'Новый txt-файл')
-        # Разбиваем на строки по ширине блока
         max_width = self.rect.width() - 12
-        lines = []
-        current = ''
-        for word in title.split():
-            test = (current + ' ' + word).strip()
-            if fm.width(test) <= max_width:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
+        if self._cached_lines is None or self._cached_title != title:
+            lines = []
+            current = ''
+            for word in title.split():
+                test = (current + ' ' + word).strip()
+                if fm.width(test) <= max_width:
+                    current = test
+                else:
+                    if current:
+                        lines.append(current)
+                    current = word
+            if current:
+                lines.append(current)
+            self._cached_lines = lines
+            self._cached_title = title
+        lines = self._cached_lines
         for i, line in enumerate(lines):
             text_x = int(self.rect.left() + 6)
             text_y = int(self.rect.top() + 40 + fm.ascent() + 4 + i * fm.height())
@@ -1166,9 +1198,6 @@ class RoadMapWidget(QGraphicsView):
                     content = f.read()
                 stage_data = {'type': 'txt', 'title': file_path.split('/')[-1], 'note_text': content, 'position': self.mapToScene(self._last_context_pos)}
                 self.add_stage(stage_data)
-        def export_png(): self.export_png_requested.emit()
-        def save_project(): self.save_project_requested.emit()
-        def open_project(): self.open_project_requested.emit()
         def show_timeline(): self.show_timeline()
         selected = self.get_selected_items()
         if len(selected) >= 2:
@@ -1178,10 +1207,8 @@ class RoadMapWidget(QGraphicsView):
             actions.append(("Создать изображение", create_image_stage))
             actions.append(("Создать txt-файл", create_txt_stage))
             actions.append(("Импортировать txt", import_txt))
-            actions.append(None)
-            actions.append(("Открыть проект", open_project))
-            actions.append(("Сохранить проект", save_project))
-            actions.append(("Экспорт в PNG", export_png))
+            # actions.append(None)  # Можно убрать разделитель, если не нужно
+            # Удалены: Открыть проект, Сохранить проект, Экспорт в PNG
         menu = GlassMenu(actions, parent=self)
         menu.show_at(event.globalPos())
         
