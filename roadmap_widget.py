@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (QMenu, QColorDialog, QGraphicsView, QGraphicsScene,
                              QGraphicsObject, QGraphicsItem, QFileDialog, QGraphicsTextItem,
                              QGraphicsLineItem, QGraphicsBlurEffect, QInputDialog, QGraphicsProxyWidget, QLabel, QVBoxLayout, QWidget, QGraphicsDropShadowEffect, QApplication, QDialog, QPushButton, QShortcut)
 from PyQt5.QtCore import (Qt, QPointF, QRectF, pyqtSignal, pyqtProperty, 
-                          QPropertyAnimation, QSequentialAnimationGroup, QTimer)
+                          QPropertyAnimation, QSequentialAnimationGroup, QTimer, QMouseEvent)
 from PyQt5.QtGui import (QPainter, QPen, QColor, QBrush, QFont, QTextOption, 
                        QPainterPath, QLinearGradient, QPainterPathStroker, QPixmap, QImage, QFontMetrics, QKeySequence, QCursor, QTextDocument)
 import math
