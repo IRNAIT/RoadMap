@@ -281,6 +281,26 @@ class CustomRichTextEditor(QWidget):
             return
         super().keyPressEvent(event)
 
+    def merge_plain_fragments(self):
+        # Удаляем все полностью пустые фрагменты, кроме единственного
+        self.fragments = [f for f in self.fragments if f.text or len(self.fragments) == 1]
+        if not self.fragments:
+            self.fragments = [TextFragment('')]
+            return
+        merged = []
+        buffer = ''
+        for frag in self.fragments:
+            if not frag.formats:
+                buffer += frag.text
+            else:
+                if buffer:
+                    merged.append(TextFragment(buffer))
+                    buffer = ''
+                merged.append(frag)
+        if buffer:
+            merged.append(TextFragment(buffer))
+        self.fragments = merged
+
     def insert_text(self, text):
         # Вставка текста в текущий фрагмент
         pos = self.cursor_pos
@@ -295,17 +315,26 @@ class CustomRichTextEditor(QWidget):
             # Если не нашли подходящий фрагмент, создаем новый
             self.fragments.append(TextFragment(text))
             self.cursor_pos += len(text)
+        self.merge_plain_fragments()
 
     def handle_backspace(self):
-        pos = self.cursor_pos
-        for frag in self.fragments:
-            if pos <= len(frag.text):
-                if pos > 0:
-                    frag.text = frag.text[:pos-1] + frag.text[pos:]
-                    self.cursor_pos -= 1
-                break
-            else:
-                pos -= len(frag.text)
+        if self.cursor_pos == 0:
+            return
+        display_text = self.get_display_text()
+        # Удаляем символ слева от курсора
+        new_text = display_text[:self.cursor_pos-1] + display_text[self.cursor_pos:]
+        self.cursor_pos -= 1
+        self.selection_start = self.selection_end = self.cursor_pos
+        # Если текст стал пустым или состоит только из невидимых символов — сбрасываем к одному пустому фрагменту
+        if not new_text.strip():
+            self.fragments = [TextFragment('')]
+            self.cursor_pos = 0
+            self.selection_start = self.selection_end = 0
+        else:
+            self.fragments = [TextFragment(new_text)]
+        parent = self.parent()
+        if parent and hasattr(parent, 'force_scroll_to_cursor'):
+            parent.force_scroll_to_cursor()
 
     def apply_formatting_by_markers(self):
         # Новый парсер: разбирает только те части текста, где есть маркеры, остальные фрагменты не трогает
@@ -729,40 +758,38 @@ class CustomRichTextEditor(QWidget):
     def paste_clipboard(self):
         clipboard = QApplication.clipboard()
         text = clipboard.text()
-        # Вставляем как raw-текст с маркерами, парсим и применяем форматирование
-        if text:
-            # Вставка на место выделения, если есть
-            if self.has_selection():
-                self.delete_selection()
-            # Парсим маркеры и вставляем
-            temp_editor = CustomRichTextEditor.create_temp_editor()
-            temp_editor.fragments = [TextFragment(text)]
-            temp_editor.apply_formatting_by_markers()
-            # Вставляем фрагменты в позицию курсора
-            pos = self.cursor_pos
-            new_fragments = []
-            acc = 0
-            inserted = False
-            for frag in self.fragments:
-                frag_len = len(frag.text)
-                if not inserted and acc + frag_len >= pos:
-                    left = pos - acc
+        if not text:
+            return
+        # Если есть выделение — удаляем её
+        if self.has_selection():
+            self.delete_selection()
+        # Вставляем текст как один фрагмент (с сохранением всех переносов)
+        pos = self.cursor_pos
+        new_fragments = []
+        acc = 0
+        inserted = False
+        for frag in self.fragments:
+            frag_len = len(frag.text)
+            if not inserted and acc + frag_len >= pos:
+                left = pos - acc
+                if left > 0:
                     new_fragments.append(TextFragment(frag.text[:left], frag.formats.copy()))
-                    new_fragments.extend([TextFragment(f.text, f.formats.copy()) for f in temp_editor.fragments])
+                new_fragments.append(TextFragment(text))
+                if left < frag_len:
                     new_fragments.append(TextFragment(frag.text[left:], frag.formats.copy()))
-                    inserted = True
-                else:
-                    new_fragments.append(frag)
-                acc += frag_len
-            if not inserted:
-                new_fragments.extend([TextFragment(f.text, f.formats.copy()) for f in temp_editor.fragments])
-            self.fragments = [f for f in new_fragments if f.text]
-            self.cursor_pos = pos + sum(len(f.text) for f in temp_editor.fragments)
-            self.selection_start = self.selection_end = self.cursor_pos
-            # Принудительно прокручиваем к курсору
-            parent = self.parent()
-            if parent and hasattr(parent, 'force_scroll_to_cursor'):
-                parent.force_scroll_to_cursor()
+                inserted = True
+            else:
+                new_fragments.append(frag)
+            acc += frag_len
+        if not inserted:
+            new_fragments.append(TextFragment(text))
+        self.fragments = [f for f in new_fragments if f.text or len(new_fragments) == 1]
+        self.merge_plain_fragments()
+        self.cursor_pos = pos + len(text)
+        self.selection_start = self.selection_end = self.cursor_pos
+        parent = self.parent()
+        if parent and hasattr(parent, 'force_scroll_to_cursor'):
+            parent.force_scroll_to_cursor()
 
     def _blink_cursor(self):
         if self.hasFocus() and not self._mouse_selecting:
@@ -794,7 +821,7 @@ class CustomRichTextEditor(QWidget):
         pos = 0
         line = 0
         layout = []
-        tab_width = self.fontMetrics().width(' ') * 6  # ширина красной строки (6 пробелов)
+        tab_width = self.fontMetrics().width(' ') * 6
         for frag in self.fragments:
             f = QFont('Finlandica', 12)
             if 'bold' in frag.formats:
@@ -806,13 +833,12 @@ class CustomRichTextEditor(QWidget):
             if 'strike' in frag.formats:
                 f.setStrikeOut(True)
             metrics = QFontMetrics(f)
-            # --- Новый блок: разбиваем по \n ---
+            # Новый блок: разбиваем по \n
             lines = frag.text.split('\n')
             for line_idx, line_text in enumerate(lines):
                 i = 0
                 while i < len(line_text):
                     if line_text[i] == '\t':
-                        # Красная строка — визуально как 6 пробелов
                         layout.append({'x': x, 'y': y, 'char': '', 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag, 'tab': True})
                         x += tab_width
                         i += 1
@@ -824,20 +850,16 @@ class CustomRichTextEditor(QWidget):
                         word += line_text[i]
                         i += 1
                     if word:
-                        words = self._split_text_into_words(word)
-                        for w in words:
-                            word_width = metrics.width(w)
-                            if x + word_width > max_text_width and x > margin_left:
-                                x = margin_left
-                                y += line_height
-                                line += 1
-                            for ch in w:
-                                char_width = metrics.width(ch)
-                                layout.append({'x': x, 'y': y, 'char': ch, 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag})
-                                x += char_width
-                                pos += 1
+                        for ch in word:
+                            char_width = metrics.width(ch)
+                            layout.append({'x': x, 'y': y, 'char': ch, 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag})
+                            x += char_width
+                            pos += 1
                 # Если это не последняя строка — перенос
                 if line_idx < len(lines) - 1:
+                    # ВАЖНО: явно добавляем символ переноса строки в layout!
+                    layout.append({'x': x, 'y': y, 'char': '\n', 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag})
+                    pos += 1
                     x = margin_left
                     y += line_height
                     line += 1
@@ -885,19 +907,13 @@ class ScrollableRichTextEditor(QScrollArea):
             return
         if not hasattr(self.editor, 'cursor_pos'):
             return
-            
         # Получаем информацию о позиции курсора
         line_info = self.editor._get_cursor_line_info()
         if not line_info:
             return
-            
-        # Вычисляем Y-координату курсора
         cursor_y = line_info['line_y']
-        
-        # Получаем видимую область
         viewport_height = self.viewport().height()
         scroll_pos = self.verticalScrollBar().value()
-        
         # Проверяем, виден ли курсор
         if cursor_y < scroll_pos + 50:  # 50px отступ сверху
             # Курсор выше видимой области, прокручиваем вверх
@@ -907,6 +923,7 @@ class ScrollableRichTextEditor(QScrollArea):
             new_scroll_pos = cursor_y - viewport_height + 50
             max_scroll = self.verticalScrollBar().maximum()
             self.verticalScrollBar().setValue(min(new_scroll_pos, max_scroll))
+        # Если курсор в поле зрения — ничего не делаем
     
     def get_display_text(self):
         return self.editor.get_display_text()
