@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 
 import sys
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QFileDialog, QMessageBox, QHBoxLayout, QWidget, QSizePolicy)
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QFileDialog, QMessageBox, QHBoxLayout, QWidget, QSizePolicy, QShortcut)
+from PyQt5.QtCore import Qt, QTimer, QObject, QEvent
+from PyQt5.QtGui import QKeySequence
 
 import json
 import base64
@@ -59,9 +60,20 @@ class LeftEdgeSensor(QWidget):
         # self.hide()  # УБРАНО!
 
     def enterEvent(self, event):
-        print('Sensor enter')
         self.sidebar_menu.expand()
         super().enterEvent(event)
+
+class GlobalHotkeyFilter(QObject):
+    def __init__(self, roadmap_widget):
+        super().__init__()
+        self.roadmap_widget = roadmap_widget
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress:
+            if event.modifiers() & Qt.ShiftModifier and event.key() == Qt.Key_G:
+                self.roadmap_widget.toggle_grid()
+                return True
+        return super().eventFilter(obj, event)
 
 class RoadMapApp(QMainWindow):
     def __init__(self):
@@ -199,6 +211,9 @@ class RoadMapApp(QMainWindow):
             event.ignore()
 
     def keyPressEvent(self, event):
+        if event.modifiers() & Qt.ShiftModifier and event.key() == Qt.Key_G:
+            self.roadmap_widget.toggle_grid()
+            return
         if event.key() == Qt.Key_F11:
             if self.is_fullscreen:
                 self.showMaximized()
@@ -216,6 +231,9 @@ def main():
     
     window = RoadMapApp()
     window.showMaximized()
+    
+    shortcut = QShortcut(QKeySequence("Shift+G"), window)
+    shortcut.activated.connect(window.roadmap_widget.toggle_grid)
     
     sys.exit(app.exec_())
 

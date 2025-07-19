@@ -3,7 +3,7 @@
 
 from PyQt5.QtWidgets import (QMenu, QColorDialog, QGraphicsView, QGraphicsScene, 
                              QGraphicsObject, QGraphicsItem, QFileDialog, QGraphicsTextItem,
-                             QGraphicsLineItem, QGraphicsBlurEffect, QInputDialog, QGraphicsProxyWidget, QLabel, QVBoxLayout, QWidget, QGraphicsDropShadowEffect, QApplication, QDialog, QPushButton)
+                             QGraphicsLineItem, QGraphicsBlurEffect, QInputDialog, QGraphicsProxyWidget, QLabel, QVBoxLayout, QWidget, QGraphicsDropShadowEffect, QApplication, QDialog, QPushButton, QShortcut)
 from PyQt5.QtCore import (Qt, QPointF, QRectF, pyqtSignal, pyqtProperty, 
                           QPropertyAnimation, QSequentialAnimationGroup, QTimer)
 from PyQt5.QtGui import (QPainter, QPen, QColor, QBrush, QFont, QTextOption, 
@@ -152,6 +152,9 @@ class StageGraphicsItem(QGraphicsObject):
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         if _recalculate:
             self.recalculate_size()
+        self._magnet_timer = None
+        self._magnet_candidate = None
+        self._magnet_last_time = 0
 
     @pyqtProperty(QColor, user=True)
     def animatedBorderColor(self):
@@ -243,11 +246,22 @@ class StageGraphicsItem(QGraphicsObject):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self._is_hovered and self.get_resize_handle_rect().contains(event.pos()):
             self.resizing = True
-            self.last_mouse_pos = event.scenePos()
+            self.resize_start_mouse_pos = event.scenePos()
+            self.resize_start_width = self.stage_data.get('width', self.rect.width())
+            self.resize_start_height = self.stage_data.get('height', self.rect.height())
             if not self.is_locked:
                 self.setFlag(QGraphicsItem.ItemIsMovable, False)
             event.accept()
             return
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.pos()
+            # --- Для группового перемещения: сохраняем стартовые позиции и стартовую мышь ---
+            selected = self.scene().selectedItems() if self.isSelected() else []
+            if len(selected) > 1:
+                mouse_scene_pos = self.mapToScene(event.pos())
+                for item in selected:
+                    item._group_drag_start_pos = item.pos()
+                    item._group_mouse_start = mouse_scene_pos
         if event.button() == Qt.RightButton:
             actions = []
             item_type = self.stage_data.get('type', 'text')
@@ -277,13 +291,13 @@ class StageGraphicsItem(QGraphicsObject):
 
     def mouseMoveEvent(self, event):
         if self.resizing:
-            delta = event.scenePos() - self.last_mouse_pos
-            self.last_mouse_pos = event.scenePos()
+            dx = event.scenePos().x() - self.resize_start_mouse_pos.x()
+            dy = event.scenePos().y() - self.resize_start_mouse_pos.y()
             self.prepareGeometryChange()
-            current_width = self.stage_data.get('width', self.rect.width())
-            current_height = self.stage_data.get('height', self.rect.height())
-            new_width = current_width + delta.x()
-            new_height = current_height + delta.y()
+            current_width = self.resize_start_width
+            current_height = self.resize_start_height
+            new_width = current_width + dx
+            new_height = current_height + dy
             fm = QFontMetrics(self.font)
             title = self.stage_data.get('title', '')
             words = title.split()
@@ -293,6 +307,23 @@ class StageGraphicsItem(QGraphicsObject):
             min_height = text_rect.height() + 40
             if new_width < min_width: new_width = min_width
             if new_height < min_height: new_height = min_height
+            # --- Привязка размеров к сетке, если сетка включена ---
+            view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            if view and getattr(view, 'show_grid', False):
+                grid_size = 40
+                magnet_radius = 5
+                grid_w = round(new_width / grid_size) * grid_size
+                grid_h = round(new_height / grid_size) * grid_size
+                snapped = False
+                if abs(new_width - grid_w) < magnet_radius:
+                    new_width = grid_w
+                    snapped = True
+                if abs(new_height - grid_h) < magnet_radius:
+                    new_height = grid_h
+                    snapped = True
+                if not snapped:
+                    new_width = current_width + dx
+                    new_height = current_height + dy
             self.stage_data['width'] = new_width
             self.stage_data['height'] = new_height
             self.recalculate_size()
@@ -301,14 +332,66 @@ class StageGraphicsItem(QGraphicsObject):
                 for conn in self.connections: conn.update_path()
             event.accept()
             return
-        super().mouseMoveEvent(event)
+        # --- Магнитизм к сетке с учётом центра и правого/нижнего края, поддержка групп ---
+        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+        offset = getattr(self, '_drag_offset', QPointF(0, 0))
+        new_pos = self.mapToScene(event.pos() - offset)
+        if view and getattr(view, 'show_grid', False):
+            grid_size = 40
+            magnet_radius = 5
+            x = new_pos.x()
+            y = new_pos.y()
+            width = self.boundingRect().width()
+            height = self.boundingRect().height()
+            candidates = [
+                (x, y),  # левый верхний угол
+                (x + width / 2, y + height / 2),  # центр
+                (x + width, y + height)  # правый нижний угол
+            ]
+            snap_x, snap_y = 0, 0
+            for cx, cy in candidates:
+                grid_x = round(cx / grid_size) * grid_size
+                grid_y = round(cy / grid_size) * grid_size
+                if abs(cx - grid_x) < magnet_radius:
+                    snap_x = grid_x - cx
+                if abs(cy - grid_y) < magnet_radius:
+                    snap_y = grid_y - cy
+            x += snap_x
+            y += snap_y
+            self.setPos(QPointF(x, y))
+            event.accept()
+            return
+        else:
+            self.setPos(QPointF(new_pos.x(), new_pos.y()))
+            event.accept()
+            return
+
+    def _apply_magnet(self, candidate):
+        self._magnet_last_time = 1
+        self.setPos(QPointF(*candidate))
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if hasattr(self, '_drag_offset'):
+                del self._drag_offset
+            # Очищаем смещения для группового перемещения
+            selected = self.scene().selectedItems() if self.isSelected() else []
+            for item in selected:
+                if hasattr(item, '_group_drag_start_pos'):
+                    del item._group_drag_start_pos
+                if hasattr(item, '_group_mouse_start'):
+                    del item._group_mouse_start
         if self.resizing:
             self.resizing = False
             if not self.is_locked:
                 self.setFlag(QGraphicsItem.ItemIsMovable, True)
             self.recalculate_size()
+            if hasattr(self, 'resize_start_mouse_pos'):
+                del self.resize_start_mouse_pos
+            if hasattr(self, 'resize_start_width'):
+                del self.resize_start_width
+            if hasattr(self, 'resize_start_height'):
+                del self.resize_start_height
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -423,6 +506,16 @@ class StageGraphicsItem(QGraphicsObject):
         self.stage_data.pop('width', None)
         self.stage_data.pop('height', None)
         self.recalculate_size()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton and not self.get_resize_handle_rect().contains(event.pos()):
+            view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            if view:
+                mapped_event = QMouseEvent(event.type(), view.mapFromScene(self.mapToScene(event.pos())), event.button(), event.buttons(), event.modifiers())
+                QApplication.sendEvent(view, mapped_event)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 class ImageStageGraphicsItem(StageGraphicsItem):
     """Специализированный блок для отображения изображения и описания под ним с возможностью изменения размера."""
@@ -715,12 +808,14 @@ class TxtStageGraphicsItem(StageGraphicsItem):
             painter.drawText(text_x, text_y, line)
 
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            if self.scene() and self.scene().views():
-                self.scene().views()[0].edit_stage(self)
+        if event.button() == Qt.LeftButton and not self.get_resize_handle_rect().contains(event.pos()):
+            view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            if view:
+                mapped_event = QMouseEvent(event.type(), view.mapFromScene(self.mapToScene(event.pos())), event.button(), event.buttons(), event.modifiers())
+                QApplication.sendEvent(view, mapped_event)
             event.accept()
-        else:
-            super().mouseDoubleClickEvent(event)
+            return
+        super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -784,6 +879,27 @@ class TxtStageGraphicsItem(StageGraphicsItem):
     def contains(self, point):
         return self.shape().contains(point)
 
+class GridGraphicsItem(QGraphicsItem):
+    def __init__(self, scene_rect, grid_size=40, parent=None):
+        super().__init__(parent)
+        self.setZValue(-100)
+        self.grid_size = grid_size
+        self.scene_rect = scene_rect
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, False)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+    def boundingRect(self):
+        return self.scene_rect
+    def paint(self, painter, option, widget=None):
+        painter.setPen(QPen(QColor(220,220,220), 1))
+        left = int(self.scene_rect.left())
+        right = int(self.scene_rect.right())
+        top = int(self.scene_rect.top())
+        bottom = int(self.scene_rect.bottom())
+        for x in range(left - left % self.grid_size, right, self.grid_size):
+            painter.drawLine(x, top, x, bottom)
+        for y in range(top - top % self.grid_size, bottom, self.grid_size):
+            painter.drawLine(left, y, right, y)
+
 class RoadMapWidget(QGraphicsView):
     stage_edit_requested = pyqtSignal(object); new_project_requested = pyqtSignal()
     open_project_requested = pyqtSignal(); save_project_requested = pyqtSignal()
@@ -808,6 +924,8 @@ class RoadMapWidget(QGraphicsView):
         self._drag_mode_before_eyedropper = self.dragMode()
         self.color_history = []
         self.timelines = []
+        self.show_grid = False
+        self.grid_item = None
         self.setup_ui()
         self.scene.selectionChanged.connect(self.handle_selection_changed)
 
@@ -818,6 +936,12 @@ class RoadMapWidget(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFocus()
+
+    def focusOutEvent(self, event):
+        self.setFocus()
+        super().focusOutEvent(event)
 
     def add_connection(self, start_item, end_item, save_state=True):
         if save_state: self.save_undo_state()
@@ -961,6 +1085,7 @@ class RoadMapWidget(QGraphicsView):
         self.scene.update()
 
     def mousePressEvent(self, event):
+        self.setFocus()
         if self._eyedropper_mode:
             item_at_pos = self.itemAt(event.pos())
             color_to_set = None
@@ -1122,6 +1247,9 @@ class RoadMapWidget(QGraphicsView):
             self.scale(zoom_out_factor, zoom_out_factor)
         
     def keyPressEvent(self, event):
+        if event.modifiers() & Qt.ShiftModifier and event.key() == Qt.Key_G:
+            self.toggle_grid()
+            return
         if event.matches(QKeySequence.Paste):
             clipboard = QApplication.clipboard()
             text = clipboard.text()
@@ -1180,8 +1308,9 @@ class RoadMapWidget(QGraphicsView):
         super().mouseMoveEvent(event)
         
     def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton and not self.itemAt(event.pos()):
+        if event.button() == Qt.LeftButton:
             self.setDragMode(QGraphicsView.RubberBandDrag if self.dragMode() == QGraphicsView.ScrollHandDrag else QGraphicsView.ScrollHandDrag)
+            event.accept()
         else:
             super().mouseDoubleClickEvent(event)
 
@@ -1349,6 +1478,20 @@ class RoadMapWidget(QGraphicsView):
         self._eyedropper_dialog = None
         self.setDragMode(self._drag_mode_before_eyedropper)
         self.setCursor(Qt.ArrowCursor)
+
+    def toggle_grid(self):
+        self.show_grid = not self.show_grid
+        if self.show_grid:
+            if self.grid_item:
+                self.scene.removeItem(self.grid_item)
+            self.grid_item = GridGraphicsItem(self.scene.sceneRect())
+            self.scene.addItem(self.grid_item)
+        else:
+            if self.grid_item:
+                self.scene.removeItem(self.grid_item)
+                self.grid_item = None
+        self.scene.update()
+        self.viewport().update()
 
 def parse_discord_to_html(text):
     import re
