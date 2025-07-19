@@ -255,13 +255,15 @@ class StageGraphicsItem(QGraphicsObject):
             return
         if event.button() == Qt.LeftButton:
             self._drag_offset = event.pos()
-            # --- Для группового перемещения: сохраняем стартовые позиции и стартовую мышь ---
+            # --- Для группового перемещения: сохраняем стартовые позиции и индивидуальный offset ---
             selected = self.scene().selectedItems() if self.isSelected() else []
             if len(selected) > 1:
                 mouse_scene_pos = self.mapToScene(event.pos())
                 for item in selected:
                     item._group_drag_start_pos = item.pos()
-                    item._group_mouse_start = mouse_scene_pos
+                    item._group_offset = mouse_scene_pos - item.pos()
+                # --- Явно сохраняем ведущий блок ---
+                self.scene()._group_leader = self
         if event.button() == Qt.RightButton:
             actions = []
             item_type = self.stage_data.get('type', 'text')
@@ -336,17 +338,52 @@ class StageGraphicsItem(QGraphicsObject):
         view = self.scene().views()[0] if self.scene() and self.scene().views() else None
         offset = getattr(self, '_drag_offset', QPointF(0, 0))
         new_pos = self.mapToScene(event.pos() - offset)
+        selected = self.scene().selectedItems() if self.isSelected() else []
+        group_leader = getattr(self.scene(), '_group_leader', None)
         if view and getattr(view, 'show_grid', False):
             grid_size = 40
             magnet_radius = 5
+            if len(selected) > 1:
+                # --- Только ведущий блок двигает остальных ---
+                if self is group_leader:
+                    x = new_pos.x()
+                    y = new_pos.y()
+                    width = self.boundingRect().width()
+                    height = self.boundingRect().height()
+                    candidates = [
+                        (x, y),
+                        (x + width / 2, y + height / 2),
+                        (x + width, y + height)
+                    ]
+                    snap_x, snap_y = 0, 0
+                    for cx, cy in candidates:
+                        grid_x = round(cx / grid_size) * grid_size
+                        grid_y = round(cy / grid_size) * grid_size
+                        if abs(cx - grid_x) < magnet_radius:
+                            snap_x = grid_x - cx
+                        if abs(cy - grid_y) < magnet_radius:
+                            snap_y = grid_y - cy
+                    x += snap_x
+                    y += snap_y
+                    self.setPos(QPointF(x, y))
+                    # --- Двигаем остальные выделенные блоки синхронно ---
+                    for item in selected:
+                        if item is not self and hasattr(item, '_group_drag_start_pos') and hasattr(item, '_group_offset'):
+                            item.setPos(event.scenePos() - item._group_offset)
+                else:
+                    # Остальные не двигаются
+                    pass
+                event.accept()
+                return
+            # --- Одиночное перемещение ---
             x = new_pos.x()
             y = new_pos.y()
             width = self.boundingRect().width()
             height = self.boundingRect().height()
             candidates = [
-                (x, y),  # левый верхний угол
-                (x + width / 2, y + height / 2),  # центр
-                (x + width, y + height)  # правый нижний угол
+                (x, y),
+                (x + width / 2, y + height / 2),
+                (x + width, y + height)
             ]
             snap_x, snap_y = 0, 0
             for cx, cy in candidates:
@@ -362,6 +399,18 @@ class StageGraphicsItem(QGraphicsObject):
             event.accept()
             return
         else:
+            if len(selected) > 1:
+                if self is group_leader:
+                    self.setPos(QPointF(new_pos.x(), new_pos.y()))
+                    # --- Двигаем остальные выделенные блоки синхронно ---
+                    for item in selected:
+                        if item is not self and hasattr(item, '_group_drag_start_pos') and hasattr(item, '_group_offset'):
+                            item.setPos(event.scenePos() - item._group_offset)
+                else:
+                    # Остальные не двигаются
+                    pass
+                event.accept()
+                return
             self.setPos(QPointF(new_pos.x(), new_pos.y()))
             event.accept()
             return
@@ -379,8 +428,11 @@ class StageGraphicsItem(QGraphicsObject):
             for item in selected:
                 if hasattr(item, '_group_drag_start_pos'):
                     del item._group_drag_start_pos
-                if hasattr(item, '_group_mouse_start'):
-                    del item._group_mouse_start
+                if hasattr(item, '_group_offset'):
+                    del item._group_offset
+            # --- Очищаем ведущий блок ---
+            if hasattr(self.scene(), '_group_leader'):
+                del self.scene()._group_leader
         if self.resizing:
             self.resizing = False
             if not self.is_locked:
