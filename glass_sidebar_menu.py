@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QSizePolicy, QSpacerItem, QStyle, QGraphicsDropShadowEffect, QFileDialog
-from PyQt5.QtCore import QPropertyAnimation, Qt, QSize, QEvent, pyqtProperty, QRectF, pyqtSignal
+from PyQt5.QtCore import QPropertyAnimation, Qt, QSize, QEvent, pyqtProperty, QRectF, pyqtSignal, QPoint
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QLinearGradient, QColor, QBrush, QPainterPath
 import os
 import base64
@@ -29,6 +29,14 @@ class GlassSidebarMenu(QWidget):
         self._sensor = None
         self.hide()
 
+    def update_position(self):
+        parent = self.parent()
+        if parent:
+            # Выравниваем по левому краю родительского окна
+            top_left = parent.mapToGlobal(QPoint(0, 0))
+            self.move(top_left)
+            self.setFixedHeight(parent.height())
+
     def set_sensor(self, sensor):
         self._sensor = sensor
 
@@ -56,6 +64,19 @@ class GlassSidebarMenu(QWidget):
         self.btn_open.clicked.connect(self.open_project_requested)
         self.btn_save.clicked.connect(self.save_project_requested)
         self.btn_export.clicked.connect(self.export_png_requested)
+
+        layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed))
+
+        # --- Кнопки добавления элементов ---
+        self.add_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_FileIcon), "  Новый блок", self)
+        self.add_image_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_ComputerIcon), "  Изображение", self)
+        self.add_txt_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_DriveNetIcon), "  Текстовый файл", self)
+        
+        for btn in [self.add_stage_button, self.add_image_stage_button, self.add_txt_stage_button]:
+            btn.setIconSize(QSize(28, 28))
+            btn.setMinimumHeight(48)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            layout.addWidget(btn)
 
         layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
 

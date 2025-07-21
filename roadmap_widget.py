@@ -3,9 +3,10 @@
 
 from PyQt5.QtWidgets import (QMenu, QColorDialog, QGraphicsView, QGraphicsScene, 
                              QGraphicsObject, QGraphicsItem, QFileDialog, QGraphicsTextItem,
-                             QGraphicsLineItem, QGraphicsBlurEffect, QInputDialog, QGraphicsProxyWidget, QLabel, QVBoxLayout, QWidget, QGraphicsDropShadowEffect, QApplication, QDialog, QPushButton, QShortcut)
+                             QGraphicsLineItem, QGraphicsBlurEffect, QInputDialog, QGraphicsProxyWidget, QLabel, QVBoxLayout, QWidget, QGraphicsDropShadowEffect, QApplication, QDialog, QPushButton, QShortcut,
+                             QTextEdit)
 from PyQt5.QtCore import (Qt, QPointF, QRectF, pyqtSignal, pyqtProperty, 
-                          QPropertyAnimation, QSequentialAnimationGroup, QTimer)
+                          QPropertyAnimation, QSequentialAnimationGroup, QTimer, QEasingCurve)
 from PyQt5.QtGui import (QPainter, QPen, QColor, QBrush, QFont, QTextOption, 
                        QPainterPath, QLinearGradient, QPainterPathStroker, QPixmap, QImage, QFontMetrics, QKeySequence, QCursor, QTextDocument, QMouseEvent)
 import math
@@ -14,6 +15,8 @@ from color_picker import ColorPickerDialog
 from glass_menu import GlassMenu
 from timeline_guide import TimelineGuideItem, TimelineLabelItem, TickItem
 from custom_rich_text_editor import ScrollableRichTextEditor, TextFragment, CustomTextEditDialog, TxtFileEditDialog
+import re
+from search_glow_graphics_item import SearchGlowGraphicsItem
 
 class ConnectionGraphicsItem(QGraphicsObject):
     """Графический элемент для отрисовки 'умных', кликабельных соединительных линий."""
@@ -121,6 +124,20 @@ class ConnectionGraphicsItem(QGraphicsObject):
                     best_pair = (p1, p2)
         return best_pair
 
+def parse_tags_from_text(text):
+    tags = []
+    cleaned_text = text
+    # Ищем все вхождения блоков с тегами вида [тег1, тег2, тег3]
+    tag_blocks = re.findall(r'\[([^\]]+)\]', text)
+    for block in tag_blocks:
+        potential_tags = [t.strip() for t in block.split(',')]
+        found_tags = [t for t in potential_tags if t]
+        if found_tags:
+            tags.extend(found_tags)
+            # Удаляем блок с тегами из текста
+            cleaned_text = re.sub(r'\[' + re.escape(block) + r'\]', '', cleaned_text, count=1)
+    return list(set(tags)), cleaned_text.strip()
+
 class StageGraphicsItem(QGraphicsObject):
     stage_edit_requested = pyqtSignal(object)
     block_moved = pyqtSignal()
@@ -155,6 +172,22 @@ class StageGraphicsItem(QGraphicsObject):
         self._magnet_timer = None
         self._magnet_candidate = None
         self._magnet_last_time = 0
+        self.border_radius = 10
+        self.padding = 15
+
+        self.tags = [] # Для хранения тегов
+        self._highlight_opacity = 0.0
+        self.highlight_animation_group = None
+        self.search_glow_opacity = 0.0
+        self._search_glow_anim = None
+        self._search_glow_pulse = None
+
+        self.title = stage_data.get('title', '')
+        self.description = stage_data.get('description', '')
+        self.position = stage_data.get('position', QPointF(50, 50))
+        self.color = QColor(stage_data.get('border_color', '#BDBDBD'))
+
+        self.setPos(self.position)
 
     @pyqtProperty(QColor, user=True)
     def animatedBorderColor(self):
@@ -456,13 +489,31 @@ class StageGraphicsItem(QGraphicsObject):
         bg_color = QColor("#FFFFFF")
         border_width = 3
         border_color = self._animated_border_color if self.isSelected() else QColor(self.stage_data.get('border_color', '#BDBDBD'))
+        
+        # Сначала рисуем красную рамку, если нужно
+        if self._highlight_opacity > 0:
+            highlight_color = self._highlight_color if hasattr(self, '_highlight_color') and self._highlight_color else QColor(255, 0, 0)
+            highlight_color.setAlphaF(self._highlight_opacity * 0.5)
+            pen = QPen(highlight_color, 7, Qt.SolidLine)
+            painter.setPen(pen)
+            highlight_rect = self.boundingRect().adjusted(-4, -4, 4, 4)
+            highlight_path = QPainterPath()
+            highlight_path.addRoundedRect(highlight_rect, self.border_radius + 4, self.border_radius + 4)
+            painter.drawPath(highlight_path)
+        
+        # Затем основной блок
         painter.setBrush(QBrush(bg_color))
         painter.setPen(QPen(border_color, border_width))
-        painter.drawRoundedRect(self.boundingRect(), 10, 10)
+        painter.drawRoundedRect(self.boundingRect(), self.border_radius, self.border_radius)
+        
         painter.setPen(QColor("#222222"))
         painter.setFont(self.font)
+        
+        # Используем только очищенный текст без тегов
         raw_text = self.stage_data.get('title', '')
-        html = parse_discord_to_html(raw_text)
+        tags, cleaned_text = parse_tags_from_text(raw_text)
+        html = parse_discord_to_html(cleaned_text)
+        
         if self._cached_doc is None or self._cached_html != html or self._cached_doc.textWidth() != self.boundingRect().width() - 16:
             doc = QTextDocument()
             doc.setDefaultFont(self.font)
@@ -470,12 +521,14 @@ class StageGraphicsItem(QGraphicsObject):
             doc.setTextWidth(self.boundingRect().width() - 16)
             self._cached_doc = doc
             self._cached_html = html
+            
         doc = self._cached_doc
         painter.save()
         painter.translate(self.boundingRect().left() + 8, self.boundingRect().top() + 8)
         clip = QRectF(0, 0, self.boundingRect().width() - 16, self.boundingRect().height() - 16)
         doc.drawContents(painter, clip)
         painter.restore()
+        
         if getattr(self, 'is_locked', False):
             lock_rect = QRectF(self.boundingRect().left() + 6, self.boundingRect().top() + 6, 18, 18)
             painter.setPen(Qt.NoPen)
@@ -486,6 +539,7 @@ class StageGraphicsItem(QGraphicsObject):
             body_rect = QRectF(lock_rect.left() + 4, lock_rect.top() + 9, 10, 7)
             painter.setBrush(QColor(100, 100, 100))
             painter.drawRect(body_rect)
+            
         if self._is_hovered:
             handle_rect = self.get_resize_handle_rect()
             arrow_color = self._animated_border_color if self.isSelected() else QColor(self.stage_data.get('border_color', '#BDBDBD'))
@@ -499,6 +553,27 @@ class StageGraphicsItem(QGraphicsObject):
             p2 = end_point + QPointF(math.cos(angle - math.pi / 6) * arrow_size, math.sin(angle - math.pi / 6) * arrow_size)
             painter.drawLine(end_point, p1)
             painter.drawLine(end_point, p2)
+            
+        if self._highlight_opacity > 0:
+            highlight_color = self._highlight_color if hasattr(self, '_highlight_color') and self._highlight_color else QColor(255, 0, 0)
+            highlight_color.setAlphaF(self._highlight_opacity)
+            pen = QPen(highlight_color, 3, Qt.SolidLine)
+            painter.setPen(pen)
+            
+            highlight_rect = self.boundingRect().adjusted(-2, -2, 2, 2)
+            highlight_path = QPainterPath()
+            highlight_path.addRoundedRect(highlight_rect, self.border_radius + 2, self.border_radius + 2)
+            painter.drawPath(highlight_path)
+
+        # --- Glow под блоком ---
+        if self.search_glow_opacity > 0.01:
+            painter.save()
+            for r in range(18, 0, -4):
+                alpha = int(80 * self.search_glow_opacity * (r/18)**2)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(0,0,0,alpha))
+                painter.drawRoundedRect(self.boundingRect().adjusted(-r, -r, r, r), self.border_radius + r, self.border_radius + r)
+            painter.restore()
 
     def get_resize_handle_rect(self):
         return QRectF(self.rect.right() - self.resize_handle_size,
@@ -568,6 +643,103 @@ class StageGraphicsItem(QGraphicsObject):
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+
+    @pyqtProperty(float)
+    def highlightOpacity(self):
+        return self._highlight_opacity
+
+    @highlightOpacity.setter
+    def highlightOpacity(self, value):
+        self._highlight_opacity = value
+        self.update()
+
+    def start_highlight(self, color=None):
+        if self.highlight_animation_group and self.highlight_animation_group.state() == QPropertyAnimation.Running:
+            return
+
+        self.setZValue(1) # Выносим на передний план при подсветке
+
+        self._highlight_color = color if color is not None else QColor(255, 0, 0)
+
+        self.highlight_animation_group = QSequentialAnimationGroup(self)
+        
+        anim1 = QPropertyAnimation(self, b'highlightOpacity', self)
+        anim1.setDuration(700)
+        anim1.setStartValue(1.0)
+        anim1.setEndValue(0.3)
+        anim1.setEasingCurve(QEasingCurve.InOutSine)
+
+        anim2 = QPropertyAnimation(self, b'highlightOpacity', self)
+        anim2.setDuration(700)
+        anim2.setStartValue(0.3)
+        anim2.setEndValue(1.0)
+        anim2.setEasingCurve(QEasingCurve.InOutSine)
+        
+        self.highlight_animation_group.addAnimation(anim1)
+        self.highlight_animation_group.addAnimation(anim2)
+        self.highlight_animation_group.setLoopCount(-1)
+        self.highlight_animation_group.start()
+
+    def stop_highlight(self):
+        if self.highlight_animation_group:
+            self.highlight_animation_group.stop()
+            self.highlight_animation_group = None
+        self._highlight_opacity = 0
+        self._highlight_color = None
+        self.setZValue(0) # Возвращаем обычный Z-индекс
+        self.update()
+
+    def set_text(self, text):
+        # Этот метод больше не нужен в таком виде, используйте update_data
+        self.stage_data['title'] = text
+        self.stage_data.pop('width', None)
+        self.stage_data.pop('height', None)
+        self.recalculate_size()
+        self.update()
+
+    @pyqtProperty(float)
+    def searchGlowOpacity(self):
+        return self.search_glow_opacity
+    @searchGlowOpacity.setter
+    def searchGlowOpacity(self, value):
+        self.search_glow_opacity = value
+        self.update()
+
+    def show_search_glow(self):
+        # Запускаем пульсацию
+        if self._search_glow_anim:
+            self._search_glow_anim.stop()
+        if self._search_glow_pulse:
+            self._search_glow_pulse.stop()
+        self._search_glow_anim = QPropertyAnimation(self, b'searchGlowOpacity')
+        self._search_glow_anim.setDuration(200)
+        self._search_glow_anim.setStartValue(self.search_glow_opacity)
+        self._search_glow_anim.setEndValue(1.0)
+        self._search_glow_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._search_glow_anim.finished.connect(self._start_glow_pulse)
+        self._search_glow_anim.start()
+
+    def _start_glow_pulse(self):
+        self._search_glow_pulse = QPropertyAnimation(self, b'searchGlowOpacity')
+        self._search_glow_pulse.setDuration(900)
+        self._search_glow_pulse.setStartValue(1.0)
+        self._search_glow_pulse.setEndValue(0.3)
+        self._search_glow_pulse.setEasingCurve(QEasingCurve.InOutSine)
+        self._search_glow_pulse.setLoopCount(-1)
+        self._search_glow_pulse.setDirection(QPropertyAnimation.Backward)
+        self._search_glow_pulse.start()
+
+    def hide_search_glow(self):
+        if self._search_glow_anim:
+            self._search_glow_anim.stop()
+        if self._search_glow_pulse:
+            self._search_glow_pulse.stop()
+        self._search_glow_anim = QPropertyAnimation(self, b'searchGlowOpacity')
+        self._search_glow_anim.setDuration(250)
+        self._search_glow_anim.setStartValue(self.search_glow_opacity)
+        self._search_glow_anim.setEndValue(0.0)
+        self._search_glow_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._search_glow_anim.start()
 
 class ImageStageGraphicsItem(StageGraphicsItem):
     """Специализированный блок для отображения изображения и описания под ним с возможностью изменения размера."""
@@ -980,6 +1152,7 @@ class RoadMapWidget(QGraphicsView):
         self.grid_item = None
         self.setup_ui()
         self.scene.selectionChanged.connect(self.handle_selection_changed)
+        self._search_glows = {}  # block: glow
 
     def setup_ui(self):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -990,6 +1163,18 @@ class RoadMapWidget(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setFocus()
+
+    def add_new_stage(self):
+        center_pos = self.mapToScene(self.viewport().rect().center())
+        self.add_stage_at_pos(center_pos)
+
+    def add_new_image_stage(self):
+        center_pos = self.mapToScene(self.viewport().rect().center())
+        self.add_image_stage_at_pos(center_pos)
+
+    def add_new_txt_stage(self):
+        center_pos = self.mapToScene(self.viewport().rect().center())
+        self.add_txt_stage_at_pos(center_pos)
 
     def focusOutEvent(self, event):
         self.setFocus()
@@ -1241,11 +1426,13 @@ class RoadMapWidget(QGraphicsView):
                 dialog.editor.from_json(data['formatted_note_text'])
             if dialog.exec_() == dialog.Accepted:
                 new_title = dialog.get_title()
-                # Сохраняем форматированный текст
                 formatted_note_text = dialog.get_formatted_json()
+                # Парсим теги и очищаем текст
+                tags, cleaned_text = parse_tags_from_text(dialog.get_text())
                 data['title'] = new_title
-                data['note_text'] = dialog.get_text()
+                data['note_text'] = cleaned_text
                 data['formatted_note_text'] = formatted_note_text
+                stage_item.tags = tags
                 stage_item.update_data(data)
         elif stage_type == 'image':
             # Для изображений редактируем description
@@ -1256,8 +1443,11 @@ class RoadMapWidget(QGraphicsView):
             if dialog.exec_() == dialog.Accepted:
                 new_text = dialog.get_text()
                 formatted_description = dialog.get_formatted_json()
-                data['description'] = new_text
+                # Парсим теги и очищаем текст
+                tags, cleaned_text = parse_tags_from_text(new_text)
+                data['description'] = cleaned_text
                 data['formatted_description'] = formatted_description
+                stage_item.tags = tags
                 stage_item.update_data(data)
         else:
             text = data.get('note_text', data.get('title', ''))
@@ -1270,12 +1460,15 @@ class RoadMapWidget(QGraphicsView):
             if dialog.exec_() == dialog.Accepted:
                 new_text = dialog.get_text()
                 formatted_title = dialog.get_formatted_json()
+                # Парсим теги и очищаем текст
+                tags, cleaned_text = parse_tags_from_text(new_text)
                 if 'note_text' in data:
-                    data['note_text'] = new_text
+                    data['note_text'] = cleaned_text
                     data['formatted_note_text'] = formatted_title
                 else:
-                    data['title'] = new_text
+                    data['title'] = cleaned_text
                     data['formatted_title'] = formatted_title
+                stage_item.tags = tags
                 stage_item.update_data(data)
 
     def wheelEvent(self, event):
@@ -1544,6 +1737,32 @@ class RoadMapWidget(QGraphicsView):
                 self.grid_item = None
         self.scene.update()
         self.viewport().update()
+
+    def search_by_tag(self, query):
+        old_glows = self._search_glows.copy()
+        self._search_glows = {}
+        if not query or not query.strip():
+            for glow in old_glows.values():
+                if glow.scene():
+                    self.scene.removeItem(glow)
+            return
+        # Только полные совпадения тегов
+        fragments = [frag.strip().lower() for frag in re.split(r'[ ,]+', query) if frag.strip()]
+        for item in self.scene.items():
+            if isinstance(item, StageGraphicsItem):
+                tags = [t.lower() for t in getattr(item, 'tags', [])]
+                has_match = any(frag == tag for frag in fragments for tag in tags)
+                if has_match:
+                    if item in old_glows:
+                        glow = old_glows.pop(item)
+                        self._search_glows[item] = glow
+                    else:
+                        glow = SearchGlowGraphicsItem(item)
+                        self.scene.addItem(glow)
+                        self._search_glows[item] = glow
+        for glow in old_glows.values():
+            if glow.scene():
+                self.scene.removeItem(glow)
 
 def parse_discord_to_html(text):
     import re

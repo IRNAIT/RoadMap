@@ -15,6 +15,7 @@ from roadmap_widget import RoadMapWidget
 from file_manager import FileManager
 from glass_menu import GlassDialog
 from glass_sidebar_menu import GlassSidebarMenu
+from search_bar import GlassSearchBar
 
 MESSAGE_BOX_STYLESHEET = """
 QMessageBox {
@@ -64,14 +65,25 @@ class LeftEdgeSensor(QWidget):
         super().enterEvent(event)
 
 class GlobalHotkeyFilter(QObject):
-    def __init__(self, roadmap_widget):
+    def __init__(self, main_window):
         super().__init__()
-        self.roadmap_widget = roadmap_widget
-
+        self.main_window = main_window
     def eventFilter(self, obj, event):
         if event.type() == QEvent.KeyPress:
-            if event.modifiers() & Qt.ShiftModifier and event.key() == Qt.Key_G:
-                self.roadmap_widget.toggle_grid()
+            if event.key() == Qt.Key_F and event.modifiers() & Qt.ShiftModifier:
+                search_bar = self.main_window.search_bar
+                # Показываем только если не видно или полностью прозрачно
+                if not search_bar.isVisible() or search_bar.windowOpacity() < 0.05:
+                    search_bar.show_widget()
+                return True
+            if event.key() == Qt.Key_G and event.modifiers() & Qt.ShiftModifier:
+                self.main_window.roadmap_widget.toggle_grid()
+                return True
+            if event.key() == Qt.Key_Escape:
+                search_bar = self.main_window.search_bar
+                # Скрываем только если реально видно
+                if search_bar.isVisible() and search_bar.windowOpacity() > 0.05:
+                    search_bar.hide_widget()
                 return True
         return super().eventFilter(obj, event)
 
@@ -86,98 +98,73 @@ class RoadMapApp(QMainWindow):
         self.roadmap_widget = RoadMapWidget()
         self.current_file_path = None
         
-        self.setup_ui()
-        self.setup_connections()
+        self.main_widget = QWidget()
+        self.main_layout = QHBoxLayout(self.main_widget)
+        self.roadmap_widget = RoadMapWidget(self)
+        self.main_layout.addWidget(self.roadmap_widget)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.setCentralWidget(self.main_widget)
         
-        self.autosave_timer = QTimer()
-        self.autosave_timer.timeout.connect(self.autosave)
-        self.autosave_timer.start(300000)
+        self.sidebar = GlassSidebarMenu(self)
+        self.search_bar = GlassSearchBar(self)
+        
+        self.setup_connections()
+        self.setup_hotkeys()
+        self.load_settings_on_start()
+        self.hotkey_filter = GlobalHotkeyFilter(self)
+        QApplication.instance().installEventFilter(self.hotkey_filter)
 
-    def setup_ui(self):
-        # --- GlassSidebarMenu ---
-        self.sidebar = GlassSidebarMenu()
-        self.sidebar.setParent(None)  # отдельное окно
-        self.sidebar.move(self.geometry().x(), self.geometry().y())
-        self.sidebar.hide()
-
-        # --- Подключаем сигналы боковой панели ---
-        self.sidebar.open_project_requested.connect(self.open_project)
-        self.sidebar.save_project_requested.connect(self.save_project)
-        self.sidebar.export_png_requested.connect(self.export_to_png)
-
-        # --- Основной RoadMapWidget ---
-        self.roadmap_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        # --- Layout ---
-        main_layout = QHBoxLayout()
-        main_layout.setSpacing(0)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.addWidget(self.roadmap_widget)
-        central_widget = QWidget()
-        central_widget.setLayout(main_layout)
-        self.setCentralWidget(central_widget)
-
-        # --- LeftEdgeSensor ---
-        self.sensor = LeftEdgeSensor(self.sidebar, width=8, parent=self.centralWidget())
-        self.sensor.move(0, 0)
-        self.sensor.setFixedHeight(self.centralWidget().height())
-        self.sensor.show()
-        self.sensor.raise_()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        # Перемещаем и растягиваем сенсор и боковую панель при изменении размера окна
-        if hasattr(self, 'sensor'):
-            self.sensor.setFixedHeight(self.centralWidget().height())
-            self.sensor.move(0, 0)
-        if hasattr(self, 'sidebar'):
-            self.sidebar.move(self.mapToGlobal(self.centralWidget().pos()))
-            self.sidebar.setFixedHeight(self.centralWidget().height())
+    def setup_hotkeys(self):
+        QShortcut(QKeySequence("Shift+G"), self, self.roadmap_widget.toggle_grid)
+        QShortcut(QKeySequence("Shift+F"), self, self.search_bar.show_widget)
 
     def setup_connections(self):
-        self.roadmap_widget.new_project_requested.connect(self.new_project)
-        self.roadmap_widget.open_project_requested.connect(self.open_project)
-        self.roadmap_widget.save_project_requested.connect(self.save_project)
+        self.sidebar.add_stage_button.clicked.connect(self.roadmap_widget.add_new_stage)
+        self.sidebar.add_image_stage_button.clicked.connect(self.roadmap_widget.add_new_image_stage)
+        self.sidebar.add_txt_stage_button.clicked.connect(self.roadmap_widget.add_new_txt_stage)
+        self.sidebar.save_project_requested.connect(self.save_project_as) # Используем save_as для кнопки
+        self.sidebar.open_project_requested.connect(self.open_project)
         self.roadmap_widget.save_as_project_requested.connect(self.save_project_as)
         self.roadmap_widget.export_png_requested.connect(self.export_to_png)
+        self.search_bar.search_triggered.connect(self.roadmap_widget.search_by_tag)
         
+    def load_settings_on_start(self):
+        """
+        Централизованная загрузка настроек приложения (не проекта).
+        На данный момент загружает только аватар.
+        """
+        if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'avatar'):
+            self.sidebar.avatar.load_avatar()
+
     def new_project(self):
         if self.confirm_action('Новый проект', 'Создать новый проект? Несохраненные изменения будут потеряны.'):
             self.roadmap_widget.clear()
             self.current_file_path = None
             
     def open_project(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, 'Открыть проект', '', 'RoadMap файлы (*.rm);;Все файлы (*)')
+        file_path, _ = QFileDialog.getOpenFileName(self, 'Открыть проект', '', 'JSON files (*.json)')
         if file_path:
-            try:
-                project_data = self.file_manager.load_project(file_path)
-                self.roadmap_widget.load_project(project_data)
-                self.current_file_path = file_path
-            except Exception as e:
-                QMessageBox.critical(self, 'Ошибка', f'Не удалось загрузить проект: {str(e)}')
-                
+            self.current_file_path = file_path
+            with open(file_path, 'r', encoding='utf-8') as f:
+                project_data = json.load(f)
+            self.roadmap_widget.load_project(project_data)
+
     def save_project(self):
-        if not self.current_file_path:
-            self.save_project_as()
+        if self.current_file_path:
+            project_data = self.roadmap_widget.get_project_data()
+            with open(self.current_file_path, 'w', encoding='utf-8') as f:
+                json.dump(project_data, f, indent=2, ensure_ascii=False)
         else:
-            try:
-                project_data = self.roadmap_widget.get_project_data()
-                self.file_manager.save_project(self.current_file_path, project_data)
-            except Exception as e:
-                QMessageBox.critical(self, 'Ошибка', f'Не удалось сохранить проект: {str(e)}')
-                
+            self.save_project_as()
+            
     def save_project_as(self):
-        file_path, _ = QFileDialog.getSaveFileName(self, 'Сохранить проект', '', 'RoadMap файлы (*.rm);;Все файлы (*)')
+        file_path, _ = QFileDialog.getSaveFileName(self, 'Сохранить проект как', '', 'JSON files (*.json)')
         if file_path:
-            if not file_path.endswith('.rm'):
-                file_path += '.rm'
-            try:
-                project_data = self.roadmap_widget.get_project_data()
-                self.file_manager.save_project(file_path, project_data)
-                self.current_file_path = file_path
-            except Exception as e:
-                QMessageBox.critical(self, 'Ошибка', f'Не удалось сохранить проект: {str(e)}')
-                
+            self.current_file_path = file_path
+            project_data = self.roadmap_widget.get_project_data()
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(project_data, f, indent=2, ensure_ascii=False)
+
     def export_to_png(self):
         file_path, _ = QFileDialog.getSaveFileName(self, 'Экспорт в PNG', '', 'PNG файлы (*.png)')
         if file_path:
@@ -223,6 +210,10 @@ class RoadMapApp(QMainWindow):
                 self.is_fullscreen = True
         super().keyPressEvent(event)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.sidebar.update_position()
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName('RoadMap')
@@ -231,9 +222,6 @@ def main():
     
     window = RoadMapApp()
     window.showMaximized()
-    
-    shortcut = QShortcut(QKeySequence("Shift+G"), window)
-    shortcut.activated.connect(window.roadmap_widget.toggle_grid)
     
     sys.exit(app.exec_())
 
