@@ -298,6 +298,13 @@ class StageGraphicsItem(QGraphicsObject):
                 # --- Явно сохраняем ведущий блок ---
                 self.scene()._group_leader = self
         if event.button() == Qt.RightButton:
+            # --- Новая логика выделения для перекраски ---
+            selected = self.scene().selectedItems() if self.scene() else []
+            if not self.isSelected() or (len(selected) > 1 and self not in selected):
+                # Если клик по невыделенному блоку — сбрасываем выделение и выделяем только этот
+                self.scene().clearSelection()
+                self.setSelected(True)
+            # Далее меню и действия применяются к текущему выделению
             actions = []
             item_type = self.stage_data.get('type', 'text')
             def edit_action():
