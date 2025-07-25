@@ -191,9 +191,14 @@ class CustomRichTextEditor(QWidget):
                 self.update()
                 return
             else:
-                self.insert_text('\n\n')
-                self._rebuild_raw()
-                self.update()
+                # По Enter — сохранить и выйти, если есть родитель-диалог
+                parent = self.parent()
+                while parent is not None and not parent.inherits('QDialog'):
+                    parent = parent.parent()
+                if parent is not None and parent.inherits('QDialog'):
+                    parent.accept()
+                    return
+                # Если не нашли диалог — ничего не делаем (или можно оставить старое поведение)
                 return
         # Управление курсором стрелками
         if event.key() == Qt.Key_Left:
