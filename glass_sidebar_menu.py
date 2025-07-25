@@ -68,15 +68,14 @@ class GlassSidebarMenu(QWidget):
         layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Fixed))
 
         # --- Кнопки добавления элементов ---
-        self.add_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_FileIcon), "  Новый блок", self)
-        self.add_image_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_ComputerIcon), "  Изображение", self)
-        self.add_txt_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_DriveNetIcon), "  Текстовый файл", self)
-        
-        for btn in [self.add_stage_button, self.add_image_stage_button, self.add_txt_stage_button]:
-            btn.setIconSize(QSize(28, 28))
-            btn.setMinimumHeight(48)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            layout.addWidget(btn)
+        # self.add_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_FileIcon), "  Новый блок", self)
+        # self.add_image_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_ComputerIcon), "  Изображение", self)
+        # self.add_txt_stage_button = QPushButton(self.style().standardIcon(QStyle.SP_DriveNetIcon), "  Текстовый файл", self)
+        # for btn in [self.add_stage_button, self.add_image_stage_button, self.add_txt_stage_button]:
+        #     btn.setIconSize(QSize(28, 28))
+        #     btn.setMinimumHeight(48)
+        #     btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        #     layout.addWidget(btn)
 
         layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
 

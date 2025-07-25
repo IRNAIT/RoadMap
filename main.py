@@ -108,6 +108,14 @@ class RoadMapApp(QMainWindow):
         self.sidebar = GlassSidebarMenu(self)
         self.search_bar = GlassSearchBar(self)
         
+        # --- Добавляем сенсор панели ---
+        self.left_edge_sensor = LeftEdgeSensor(self.sidebar, width=20, parent=self)
+        self.left_edge_sensor.setFixedHeight(self.height())
+        self.left_edge_sensor.move(0, 0)
+        self.left_edge_sensor.show()
+        self.sidebar.set_sensor(self.left_edge_sensor)
+        # --- конец блока сенсора ---
+        
         self.setup_connections()
         self.setup_hotkeys()
         self.load_settings_on_start()
@@ -119,9 +127,9 @@ class RoadMapApp(QMainWindow):
         QShortcut(QKeySequence("Shift+F"), self, self.search_bar.show_widget)
 
     def setup_connections(self):
-        self.sidebar.add_stage_button.clicked.connect(self.roadmap_widget.add_new_stage)
-        self.sidebar.add_image_stage_button.clicked.connect(self.roadmap_widget.add_new_image_stage)
-        self.sidebar.add_txt_stage_button.clicked.connect(self.roadmap_widget.add_new_txt_stage)
+        # self.sidebar.add_stage_button.clicked.connect(self.roadmap_widget.add_new_stage)
+        # self.sidebar.add_image_stage_button.clicked.connect(self.roadmap_widget.add_new_image_stage)
+        # self.sidebar.add_txt_stage_button.clicked.connect(self.roadmap_widget.add_new_txt_stage)
         self.sidebar.save_project_requested.connect(self.save_project_as) # Используем save_as для кнопки
         self.sidebar.open_project_requested.connect(self.open_project)
         self.roadmap_widget.save_as_project_requested.connect(self.save_project_as)
@@ -135,7 +143,7 @@ class RoadMapApp(QMainWindow):
         """
         if hasattr(self, 'sidebar') and hasattr(self.sidebar, 'avatar'):
             self.sidebar.avatar.load_avatar()
-
+        
     def new_project(self):
         if self.confirm_action('Новый проект', 'Создать новый проект? Несохраненные изменения будут потеряны.'):
             self.roadmap_widget.clear()
@@ -147,8 +155,8 @@ class RoadMapApp(QMainWindow):
             self.current_file_path = file_path
             with open(file_path, 'r', encoding='utf-8') as f:
                 project_data = json.load(f)
-            self.roadmap_widget.load_project(project_data)
-
+                self.roadmap_widget.load_project(project_data)
+                
     def save_project(self):
         if self.current_file_path:
             project_data = self.roadmap_widget.get_project_data()
@@ -156,7 +164,7 @@ class RoadMapApp(QMainWindow):
                 json.dump(project_data, f, indent=2, ensure_ascii=False)
         else:
             self.save_project_as()
-            
+                
     def save_project_as(self):
         file_path, _ = QFileDialog.getSaveFileName(self, 'Сохранить проект как', '', 'JSON files (*.json)')
         if file_path:
@@ -164,7 +172,7 @@ class RoadMapApp(QMainWindow):
             project_data = self.roadmap_widget.get_project_data()
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(project_data, f, indent=2, ensure_ascii=False)
-
+                
     def export_to_png(self):
         file_path, _ = QFileDialog.getSaveFileName(self, 'Экспорт в PNG', '', 'PNG файлы (*.png)')
         if file_path:
@@ -213,6 +221,9 @@ class RoadMapApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.sidebar.update_position()
+        # --- Обновляем высоту сенсора при изменении размера окна ---
+        if hasattr(self, 'left_edge_sensor'):
+            self.left_edge_sensor.setFixedHeight(self.height())
 
 def main():
     app = QApplication(sys.argv)

@@ -1,4 +1,4 @@
-import re
+пшimport re
 import json
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QPushButton, QApplication, QScrollArea, QDialog, QHBoxLayout, QSizePolicy, QLabel, QMessageBox
 from PyQt5.QtGui import QPainter, QFont, QColor, QKeyEvent, QFontMetrics, QClipboard
@@ -772,11 +772,11 @@ class CustomRichTextEditor(QWidget):
             frag_len = len(frag.text)
             if not inserted and acc + frag_len >= pos:
                 left = pos - acc
-                if left > 0:
-                    new_fragments.append(TextFragment(frag.text[:left], frag.formats.copy()))
-                new_fragments.append(TextFragment(text))
-                if left < frag_len:
-                    new_fragments.append(TextFragment(frag.text[left:], frag.formats.copy()))
+            if left > 0:
+                new_fragments.append(TextFragment(frag.text[:left], frag.formats.copy()))
+            new_fragments.append(TextFragment(text))
+            if left < frag_len:
+                new_fragments.append(TextFragment(frag.text[left:], frag.formats.copy()))
                 inserted = True
             else:
                 new_fragments.append(frag)
@@ -851,10 +851,10 @@ class CustomRichTextEditor(QWidget):
                         i += 1
                     if word:
                         for ch in word:
-                            char_width = metrics.width(ch)
-                            layout.append({'x': x, 'y': y, 'char': ch, 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag})
-                            x += char_width
-                            pos += 1
+                                char_width = metrics.width(ch)
+                                layout.append({'x': x, 'y': y, 'char': ch, 'pos': pos, 'line': line, 'font': f, 'metrics': metrics, 'frag': frag})
+                                x += char_width
+                                pos += 1
                 # Если это не последняя строка — перенос
                 if line_idx < len(lines) - 1:
                     # ВАЖНО: явно добавляем символ переноса строки в layout!

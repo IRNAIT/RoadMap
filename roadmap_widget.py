@@ -1046,7 +1046,7 @@ class TxtStageGraphicsItem(StageGraphicsItem):
                 QApplication.sendEvent(view, mapped_event)
             event.accept()
             return
-        super().mouseDoubleClickEvent(event)
+            super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
