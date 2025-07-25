@@ -1,4 +1,4 @@
-пшimport re
+import re
 import json
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QPushButton, QApplication, QScrollArea, QDialog, QHBoxLayout, QSizePolicy, QLabel, QMessageBox
 from PyQt5.QtGui import QPainter, QFont, QColor, QKeyEvent, QFontMetrics, QClipboard
